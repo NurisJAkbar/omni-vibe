@@ -103,11 +103,45 @@ const brandIdentitySchema: Schema = {
 };
 
 /**
- * Stage 1: Analyze Input (Image/Video + Text)
- * Uses Gemini 3 Pro with Thinking for deep reasoning about aesthetics.
+ * Helper to call generateContent with retry logic for different models.
  */
-export const analyzeVibe = async (file: File, userPrompt: string): Promise<BrandIdentity> => {
+async function generateIdentityWithModel(
+  modelName: string, 
+  parts: any[], 
+  useThinking: boolean
+): Promise<BrandIdentity> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const config: any = {
+    responseMimeType: "application/json",
+    responseSchema: brandIdentitySchema,
+  };
+
+  if (useThinking) {
+    config.thinkingConfig = { thinkingBudget: 2048 };
+  }
+
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: { parts },
+    config: config
+  });
+
+  const text = response.text;
+  if (!text) throw new Error(`No response text from model ${modelName}`);
+  
+  return JSON.parse(text) as BrandIdentity;
+}
+
+/**
+ * Stage 1: Analyze Input (Image/Video + Text)
+ * Uses a waterfall strategy: Gemini 3 Pro -> Gemini 2.0 Flash Thinking -> Gemini 2.5 Flash
+ */
+export const analyzeVibe = async (file: File | null, userPrompt: string): Promise<BrandIdentity> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API Key is missing. Please check your environment configuration.");
+  }
+
   const parts: any[] = [];
   
   if (file) {
@@ -134,20 +168,26 @@ export const analyzeVibe = async (file: File, userPrompt: string): Promise<Brand
   `;
   parts.push({ text: promptText });
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: { parts },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: brandIdentitySchema,
-      thinkingConfig: { thinkingBudget: 2048 } // Enable reasoning for deeper aesthetic analysis
-    }
-  });
+  // Strategy 1: Try Gemini 3 Pro Preview (Best Quality)
+  try {
+    console.log("Attempting analysis with gemini-3-pro-preview...");
+    return await generateIdentityWithModel('gemini-3-pro-preview', parts, true);
+  } catch (error: any) {
+    console.warn("Gemini 3 Pro failed:", error);
+    
+    // Strategy 2: Try Gemini 2.0 Flash Thinking (High Reasoning, Fast)
+    try {
+      console.log("Falling back to gemini-2.0-flash-thinking-exp-01-21...");
+      return await generateIdentityWithModel('gemini-2.0-flash-thinking-exp-01-21', parts, true);
+    } catch (error2: any) {
+      console.warn("Gemini 2.0 Flash Thinking failed:", error2);
 
-  const text = response.text;
-  if (!text) throw new Error("No response from analysis model.");
-  
-  return JSON.parse(text) as BrandIdentity;
+      // Strategy 3: Try Gemini 2.5 Flash (Most Reliable/Available)
+      // Note: We disable thinking config for the base model to ensure compatibility
+      console.log("Falling back to gemini-2.5-flash-preview...");
+      return await generateIdentityWithModel('gemini-2.5-flash-preview', parts, false);
+    }
+  }
 };
 
 /**

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { analyzeVibe, generateAsset } from './services/geminiService';
 import { BrandIdentity, GeneratedAsset, AppState } from './types';
 import { AnalysisView } from './components/AnalysisView';
@@ -12,6 +12,13 @@ const App: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Basic check to warn the user if the environment variable is missing in the build
+    if (!process.env.API_KEY) {
+      console.error("API_KEY environment variable is missing!");
+    }
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -28,12 +35,19 @@ const App: React.FC = () => {
   };
 
   const ensureApiKey = async () => {
+    // Check for build-time key first
+    if (process.env.API_KEY) return;
+
+    // Fallback to client-side injection if available (IDX environments)
     const aistudio = (window as any).aistudio;
     if (aistudio) {
       const hasKey = await aistudio.hasSelectedApiKey();
       if (!hasKey) {
         await aistudio.openSelectKey();
       }
+    } else {
+       // If no env key and no AI Studio client, we have a problem.
+       // We'll let the service throw the error which will be caught below.
     }
   };
 
@@ -44,12 +58,22 @@ const App: React.FC = () => {
 
     setAppState(AppState.ANALYZING);
     try {
-      const identity = await analyzeVibe(selectedFile!, inputPrompt);
+      const identity = await analyzeVibe(selectedFile, inputPrompt);
       setBrandData(identity);
       setAppState(AppState.REVIEW);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Analysis failed:", error);
-      alert("Analysis failed. Please try again.");
+      let msg = "Analysis failed. Please try again.";
+      
+      if (error.message.includes("API Key is missing")) {
+        msg = "Configuration Error: API Key is missing. Please add 'API_KEY' to your Netlify Environment Variables.";
+      } else if (error.message.includes("403")) {
+        msg = "Access Denied: Please check your API key permissions.";
+      } else if (error.message.includes("503") || error.message.includes("Overloaded")) {
+        msg = "Service Overloaded: The AI model is currently busy. Please retry in a moment.";
+      }
+
+      alert(msg);
       setAppState(AppState.IDLE);
     }
   };
@@ -78,13 +102,13 @@ const App: React.FC = () => {
       
       // Handle fatal errors that couldn't be solved by fallback
       if (error.status === 403 || error.message?.includes("PERMISSION_DENIED")) {
-        alert("Permission denied. Please select a valid API key.");
+        alert("Permission denied. Check API Key or Quota.");
         const aistudio = (window as any).aistudio;
         if (aistudio) {
             await aistudio.openSelectKey();
         }
       } else {
-        alert("Failed to generate asset. Please try again.");
+        alert(`Failed to generate asset: ${error.message || "Unknown error"}`);
       }
       setAppState(AppState.REVIEW);
     }
