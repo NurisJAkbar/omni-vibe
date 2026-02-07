@@ -28,7 +28,7 @@ You are a high-end Autonomous Creative Agent. Your goal is to transform any visu
 """
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-pro",
+    model_name="gemini-3-pro-preview",
     system_instruction=SYSTEM_INSTRUCTION
 )
 
