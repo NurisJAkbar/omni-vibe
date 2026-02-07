@@ -134,7 +134,7 @@ async function generateIdentityWithModel(
 
 /**
  * Stage 1: Analyze Input (Image/Video + Text)
- * Uses a waterfall strategy: Gemini 3 Pro -> Gemini 2.0 Flash Thinking -> Gemini 2.5 Flash
+ * Uses a waterfall strategy: Gemini 3 Pro -> Gemini 3 Flash -> Gemini 2.5 Flash
  */
 export const analyzeVibe = async (apiKey: string, file: File | null, userPrompt: string): Promise<BrandIdentity> => {
   if (!apiKey) {
@@ -167,22 +167,22 @@ export const analyzeVibe = async (apiKey: string, file: File | null, userPrompt:
   `;
   parts.push({ text: promptText });
 
-  // Strategy 1: Try Gemini 3 Pro Preview (Best Quality)
+  // Strategy 1: Try Gemini 3 Pro Preview (Best Quality, Complex Reasoning)
   try {
     console.log("Attempting analysis with gemini-3-pro-preview...");
     return await generateIdentityWithModel(apiKey, 'gemini-3-pro-preview', parts, true);
   } catch (error: any) {
     console.warn("Gemini 3 Pro failed:", error);
     
-    // Strategy 2: Try Gemini 2.0 Flash Thinking (High Reasoning, Fast)
+    // Strategy 2: Try Gemini 3 Flash Preview (Fast, Balanced)
     try {
-      console.log("Falling back to gemini-2.0-flash-thinking-exp-01-21...");
-      return await generateIdentityWithModel(apiKey, 'gemini-2.0-flash-thinking-exp-01-21', parts, true);
+      console.log("Falling back to gemini-3-flash-preview...");
+      return await generateIdentityWithModel(apiKey, 'gemini-3-flash-preview', parts, true);
     } catch (error2: any) {
-      console.warn("Gemini 2.0 Flash Thinking failed:", error2);
+      console.warn("Gemini 3 Flash failed:", error2);
 
-      // Strategy 3: Try Gemini 2.5 Flash (Most Reliable/Available)
-      // Note: We disable thinking config for the base model to ensure compatibility
+      // Strategy 3: Try Gemini 2.5 Flash Preview (High Availability Fallback)
+      // We disable thinking for this older/standard model to ensure compatibility
       console.log("Falling back to gemini-2.5-flash-preview...");
       return await generateIdentityWithModel(apiKey, 'gemini-2.5-flash-preview', parts, false);
     }
