@@ -5,20 +5,78 @@ import { AnalysisView } from './components/AnalysisView';
 import { AssetGallery } from './components/AssetGallery';
 
 const App: React.FC = () => {
+  // Application State
+  const [apiKey, setApiKey] = useState<string>('');
+  const [isKeySet, setIsKeySet] = useState<boolean>(false);
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
+  
+  // Data State
   const [brandData, setBrandData] = useState<BrandIdentity | null>(null);
   const [generatedAssets, setGeneratedAssets] = useState<GeneratedAsset[]>([]);
   const [inputPrompt, setInputPrompt] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Initialize: Check localStorage for existing key ONLY.
+  // We strictly ignore process.env.API_KEY to force manual entry as requested.
   useEffect(() => {
-    // Basic check to warn the user if the environment variable is missing in the build
-    if (!process.env.API_KEY) {
-      console.error("API_KEY environment variable is missing!");
-    }
+    const storedKey = localStorage.getItem('omni_vibe_api_key');
+
+    if (storedKey && storedKey.length > 10) {
+      setApiKey(storedKey);
+      setIsKeySet(true);
+    } 
   }, []);
+
+  const handleSaveKey = () => {
+    const cleanedKey = apiKey.trim();
+    if (cleanedKey.length > 10 && cleanedKey.startsWith('AIza')) {
+      localStorage.setItem('omni_vibe_api_key', cleanedKey);
+      setApiKey(cleanedKey);
+      setIsKeySet(true);
+    } else {
+      alert("Invalid Key Format. Gemini API Keys typically start with 'AIza'.");
+    }
+  };
+
+  const handleClearKey = () => {
+    if (confirm("Are you sure you want to remove your API Key and reset?")) {
+      localStorage.removeItem('omni_vibe_api_key');
+      setApiKey('');
+      setIsKeySet(false);
+      reset();
+    }
+  };
+
+  // Helper to handle API errors and force re-auth if needed
+  const handleApiError = (error: any) => {
+    console.error("API Error detected:", error);
+    let msg = "An unexpected error occurred.";
+    
+    // Auth Errors
+    if (error.message.includes("403") || error.message.includes("API Key is missing") || error.message.includes("PERMISSION_DENIED")) {
+      msg = "Authentication Failed: Your API Key is invalid or expired.";
+      alert(msg);
+      localStorage.removeItem('omni_vibe_api_key'); // Clear bad key
+      setApiKey('');
+      setIsKeySet(false);
+      reset();
+      return;
+    }
+
+    // Server Errors
+    if (error.message.includes("503") || error.message.includes("Overloaded")) {
+      msg = "Service Overloaded: The AI model is currently busy. Please retry in a moment.";
+    } else if (error.message.includes("404")) {
+      msg = "Model Not Found: The selected model is not available for this key/region.";
+    } else {
+      msg = `Error: ${error.message}`;
+    }
+
+    alert(msg);
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -34,59 +92,27 @@ const App: React.FC = () => {
     }
   };
 
-  const ensureApiKey = async () => {
-    // Check for build-time key first
-    if (process.env.API_KEY) return;
-
-    // Fallback to client-side injection if available (IDX environments)
-    const aistudio = (window as any).aistudio;
-    if (aistudio) {
-      const hasKey = await aistudio.hasSelectedApiKey();
-      if (!hasKey) {
-        await aistudio.openSelectKey();
-      }
-    } else {
-       // If no env key and no AI Studio client, we have a problem.
-       // We'll let the service throw the error which will be caught below.
-    }
-  };
-
   const handleAnalyze = async () => {
-    if (!selectedFile && !inputPrompt) return;
+    if ((!selectedFile && !inputPrompt) || !isKeySet) return;
     
-    await ensureApiKey();
-
     setAppState(AppState.ANALYZING);
     try {
-      const identity = await analyzeVibe(selectedFile, inputPrompt);
+      const identity = await analyzeVibe(apiKey, selectedFile, inputPrompt);
       setBrandData(identity);
       setAppState(AppState.REVIEW);
     } catch (error: any) {
-      console.error("Analysis failed:", error);
-      let msg = "Analysis failed. Please try again.";
-      
-      if (error.message.includes("API Key is missing")) {
-        msg = "Configuration Error: API Key is missing. Please add 'API_KEY' to your Netlify Environment Variables.";
-      } else if (error.message.includes("403")) {
-        msg = "Access Denied: Please check your API key permissions.";
-      } else if (error.message.includes("503") || error.message.includes("Overloaded")) {
-        msg = "Service Overloaded: The AI model is currently busy. Please retry in a moment.";
-      }
-
-      alert(msg);
+      handleApiError(error);
       setAppState(AppState.IDLE);
     }
   };
 
   const handleGenerateAsset = async (type: 'logo' | 'social' | 'mockup') => {
-    if (!brandData) return;
+    if (!brandData || !isKeySet) return;
     
-    await ensureApiKey();
-
     setAppState(AppState.GENERATING_ASSET);
     try {
       // Pass the selectedFile (original input) as a reference for the image generation
-      const base64Image = await generateAsset(type, brandData, selectedFile);
+      const base64Image = await generateAsset(apiKey, type, brandData, selectedFile);
       const newAsset: GeneratedAsset = {
         id: Math.random().toString(36).substr(2, 9),
         type,
@@ -98,18 +124,7 @@ const App: React.FC = () => {
       setGeneratedAssets(prev => [newAsset, ...prev]);
       setAppState(AppState.REVIEW); 
     } catch (error: any) {
-      console.error("Asset generation failed:", error);
-      
-      // Handle fatal errors that couldn't be solved by fallback
-      if (error.status === 403 || error.message?.includes("PERMISSION_DENIED")) {
-        alert("Permission denied. Check API Key or Quota.");
-        const aistudio = (window as any).aistudio;
-        if (aistudio) {
-            await aistudio.openSelectKey();
-        }
-      } else {
-        alert(`Failed to generate asset: ${error.message || "Unknown error"}`);
-      }
+      handleApiError(error);
       setAppState(AppState.REVIEW);
     }
   };
@@ -123,6 +138,65 @@ const App: React.FC = () => {
     setInputPrompt("");
   };
 
+  // -----------------------------------------------------------------------
+  // RENDER: GATEWAY SCREEN (No API Key)
+  // -----------------------------------------------------------------------
+  if (!isKeySet) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center p-4 relative overflow-hidden">
+        {/* Background Ambient */}
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-900/20 blur-[100px] rounded-full pointer-events-none"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-900/20 blur-[100px] rounded-full pointer-events-none"></div>
+
+        <div className="glass-panel max-w-md w-full p-8 rounded-2xl border border-white/10 shadow-2xl shadow-purple-900/20 text-center animate-fade-in relative z-10">
+          <div className="w-16 h-16 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg shadow-purple-500/30">
+            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+            </svg>
+          </div>
+          
+          <h1 className="text-3xl font-bold mb-2 tracking-tight">Access Required</h1>
+          <p className="text-gray-400 mb-8 text-sm leading-relaxed">
+            OmniVibe Studio uses advanced Gemini 3 models. Please enter your API key to initialize the autonomous agent.
+          </p>
+          
+          <div className="space-y-4">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Paste Gemini API Key (AIza...)"
+              className="w-full bg-black/40 border border-white/20 rounded-lg p-4 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all font-mono text-sm text-center"
+            />
+            
+            <button
+              onClick={handleSaveKey}
+              className="w-full bg-white text-black font-bold py-4 rounded-lg hover:bg-gray-200 transition-colors flex items-center justify-center gap-2"
+            >
+              <span>Initialize Studio</span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+            </button>
+          </div>
+          
+          <div className="mt-8 pt-6 border-t border-white/5">
+            <a 
+              href="https://aistudio.google.com/app/apikey" 
+              target="_blank" 
+              rel="noreferrer"
+              className="text-xs text-gray-500 hover:text-purple-400 transition-colors flex items-center justify-center gap-1"
+            >
+              <span>Don't have a key? Get one from Google AI Studio</span>
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // RENDER: MAIN APP
+  // -----------------------------------------------------------------------
   return (
     <div className="min-h-screen pb-20 bg-[#050505] text-white selection:bg-purple-500 selection:text-white">
       
@@ -142,17 +216,22 @@ const App: React.FC = () => {
                {appState === AppState.REVIEW && 'INTERACTIVE MODE'}
             </div>
             
-            {appState !== AppState.IDLE && (
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-900/20 border border-emerald-500/20">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                <span className="text-[10px] font-bold text-emerald-400 tracking-wider">SYSTEM ONLINE</span>
+              </div>
+              
               <button 
-                onClick={reset}
-                className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors flex items-center gap-2"
+                onClick={handleClearKey}
+                className="group p-2 hover:bg-white/10 rounded-full transition-colors"
+                title="Disconnect / Reset API Key"
               >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                <svg className="w-4 h-4 text-gray-500 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                 </svg>
-                Create New
               </button>
-            )}
+            </div>
           </div>
         </div>
       </nav>
@@ -225,9 +304,10 @@ const App: React.FC = () => {
               <button
                 onClick={handleAnalyze}
                 disabled={!selectedFile && !inputPrompt}
-                className="w-full mt-6 bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-6 bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                Start Analysis
+                <span>Begin Analysis</span>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
               </button>
             </div>
           </div>
